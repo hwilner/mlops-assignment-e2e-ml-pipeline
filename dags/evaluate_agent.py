@@ -53,8 +53,18 @@ from airflow.models.param import Param
 # ---------------------------------------------------------------------------
 # Project layout
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RUNS_ROOT = PROJECT_ROOT / "runs"
+# Fix 2: make paths env-configurable so the DAG works both locally (where
+# __file__ resolves to the repo root) and inside Docker (where the DAG file
+# is mounted at /opt/airflow/dags/ but the project lives at /mlops-assignment).
+#
+# docker-compose.yaml sets:
+#   PROJECT_ROOT=/mlops-assignment
+#   RUNS_ROOT=/opt/airflow/runs
+#
+# Local / standalone mode: both env vars are unset, so the fallback resolves
+# to the repo root via __file__ as before.
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", str(Path(__file__).resolve().parents[1])))
+RUNS_ROOT = Path(os.environ.get("RUNS_ROOT", str(PROJECT_ROOT / "runs")))
 
 # ---------------------------------------------------------------------------
 # Default parameter values
@@ -216,13 +226,27 @@ def run_swebench_eval(
     """
     eval_out_dir = run_dir / "run-eval"
 
+    # Fix 5: derive the dataset name from the 'subset' param so that triggering
+    # with subset='lite' evaluates against SWE-bench_Lite, not SWE-bench_Verified.
+    # If an unrecognised subset is passed, fall back to using it verbatim so
+    # callers can supply a fully-qualified dataset name directly.
+    dataset_by_subset: dict[str, str] = {
+        "verified": "princeton-nlp/SWE-bench_Verified",
+        "lite":     "princeton-nlp/SWE-bench_Lite",
+        "full":     "princeton-nlp/SWE-bench",
+    }
+    dataset_name = dataset_by_subset.get(
+        run_config["subset"].lower(),
+        run_config["subset"],  # fallback: treat subset as a raw dataset name
+    )
+
     cmd = [
         "uv", "run", "python", "-m", "swebench.harness.run_evaluation",
-        "--dataset_name",   "princeton-nlp/SWE-bench_Verified",
+        "--dataset_name",     dataset_name,
         "--predictions_path", str(preds_path),
-        "--max_workers",    str(run_config["workers"]),
-        "--run_id",         run_config["run_id"],
-        "--output_dir",     str(eval_out_dir),
+        "--max_workers",      str(run_config["workers"]),
+        "--run_id",           run_config["run_id"],
+        "--output_dir",       str(eval_out_dir),
     ]
 
     subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)

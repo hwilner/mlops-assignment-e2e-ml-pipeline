@@ -45,15 +45,24 @@ x-airflow-common: &airflow-common
     NEBIUS_API_KEY: ${NEBIUS_API_KEY}
     # Pass through any other env vars from .env.
     MSWEA_COST_TRACKING: ignore_errors
+    # Fix 2: tell the DAG where the project root and runs directory are inside
+    # the container, so subprocess calls use the correct cwd and output path.
+    PROJECT_ROOT: /mlops-assignment
+    RUNS_ROOT: /opt/airflow/runs
   volumes:
-    # Mount DAGs directory so changes are reflected without rebuild.
+    # Fix 3: mount only targeted directories — do NOT mount the full project
+    # root (.:/mlops-assignment) because that would hide the .venv built during
+    # 'docker build' and break 'uv run' / 'airflow' commands.
+    #
+    # DAGs: mounted read-only so live edits are picked up without rebuild.
     - ./dags:/opt/airflow/dags:ro
-    # Mount scripts so Airflow tasks can call them.
-    - ./scripts:/opt/airflow/scripts:ro
-    # Mount runs directory read-write for artefact output.
+    # Scripts: mounted read-only so the DAG can call them.
+    - ./scripts:/mlops-assignment/scripts:ro
+    # Runs: mounted read-write so artefacts are visible on the host.
     - ./runs:/opt/airflow/runs
-    # Mount project root so uv can resolve the venv.
-    - .:/mlops-assignment:ro
+    # Fix 4: expose the host Docker daemon socket so the SWE-bench evaluation
+    # harness can launch Docker containers for each test instance.
+    - /var/run/docker.sock:/var/run/docker.sock
   depends_on:
     postgres:
       condition: service_healthy
