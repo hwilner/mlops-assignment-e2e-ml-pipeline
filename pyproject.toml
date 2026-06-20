@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "mini-swe-agent>=2.4.1",
     "swebench>=4.1.0",
-    "apache-airflow[postgres]>=2.9.0",
+    "apache-airflow[postgres]>=2.9,<3",
     "mlflow>=2.13.0",
     "psycopg2-binary>=2.9.9",
 ]
