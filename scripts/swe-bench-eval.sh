@@ -39,6 +39,6 @@ uv run python -m swebench.harness.run_evaluation \
     --predictions_path "${PREDS_PATH}" \
     --max_workers    "${WORKERS}" \
     --run_id         "${RUN_ID}" \
-    --output_dir     "${OUTPUT_DIR}"
+    --report_dir     "${OUTPUT_DIR}"
 
 echo "[swe-bench-eval] Done.  Output: ${OUTPUT_DIR}"

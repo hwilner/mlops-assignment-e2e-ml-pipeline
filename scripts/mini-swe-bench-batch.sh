@@ -44,7 +44,7 @@ CMD=(
     --model   "${MODEL}"
     --slice   "${TASK_SLICE}"
     --workers "${WORKERS}"
-    --yolo
+   
     -o        "${OUTPUT_DIR}"
 )
 

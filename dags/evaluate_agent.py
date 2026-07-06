@@ -183,7 +183,6 @@ def run_agent_batch(run_config: dict[str, Any], run_dir: Path) -> Path:
         "--model",   run_config["model"],
         "--slice",   run_config["task_slice"],
         "--workers", str(run_config["workers"]),
-        "--yolo",
         "-o", str(agent_out_dir),
     ]
 
@@ -246,7 +245,7 @@ def run_swebench_eval(
         "--predictions_path", str(preds_path),
         "--max_workers",      str(run_config["workers"]),
         "--run_id",           run_config["run_id"],
-        "--output_dir",       str(eval_out_dir),
+        "--report_dir",       str(eval_out_dir),
     ]
 
     subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)

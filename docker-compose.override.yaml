@@ -1,0 +1,43 @@
+services:
+  airflow-init:
+    environment:
+      TZ: UTC
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
+      AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: UTC
+    command:
+      - bash
+      - -lc
+      - |
+        export TZ=UTC
+        echo UTC > /etc/timezone
+        ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+        .venv/bin/airflow db migrate &&
+        (.venv/bin/airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true)
+
+  airflow-web:
+    environment:
+      TZ: UTC
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
+      AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: UTC
+    command:
+      - bash
+      - -lc
+      - |
+        export TZ=UTC
+        echo UTC > /etc/timezone
+        ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+        .venv/bin/airflow webserver
+
+  airflow-sched:
+    environment:
+      TZ: UTC
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
+      AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: UTC
+    command:
+      - bash
+      - -lc
+      - |
+        export TZ=UTC
+        echo UTC > /etc/timezone
+        ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+        .venv/bin/airflow scheduler
