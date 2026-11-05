@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#
 # scripts/mini-swe-bench-batch.sh
 #
 # Run mini-swe-agent on a batch of SWE-bench tasks.
@@ -37,6 +38,24 @@ echo "  workers    : ${WORKERS}"
 echo "  cost_limit : ${COST_LIMIT}"
 echo "  output_dir : ${OUTPUT_DIR}"
 
+# The batch subcommand of mini-extra has no --cost-limit option — only the
+# single-instance subcommand has one — so the limit is set as an agent
+# configuration key instead.  The benchmark configuration is named
+# explicitly because mini-swe-agent replaces its default configuration as
+# soon as any --config value is given.  The package is located with
+# find_spec so that it is not imported, which keeps this script cheap to
+# start.
+AGENT_CONFIG="$(uv run python -c '
+import importlib.util
+from pathlib import Path
+
+spec = importlib.util.find_spec("minisweagent")
+if spec is None or not spec.submodule_search_locations:
+    raise SystemExit("mini-swe-agent is not installed")
+root = Path(next(iter(spec.submodule_search_locations)))
+print(root / "config" / "benchmarks" / "swebench.yaml")
+')"
+
 CMD=(
     uv run mini-extra swebench
     --subset  "${SUBSET}"
@@ -44,13 +63,10 @@ CMD=(
     --model   "${MODEL}"
     --slice   "${TASK_SLICE}"
     --workers "${WORKERS}"
-   
     -o        "${OUTPUT_DIR}"
+    -c        "${AGENT_CONFIG}"
+    -c        "agent.cost_limit=${COST_LIMIT}"
 )
-
-if [ "${COST_LIMIT}" != "0" ] && [ "${COST_LIMIT}" != "0.0" ]; then
-    CMD+=(--cost-limit "${COST_LIMIT}")
-fi
 
 export MSWEA_COST_TRACKING="${MSWEA_COST_TRACKING:-ignore_errors}"
 

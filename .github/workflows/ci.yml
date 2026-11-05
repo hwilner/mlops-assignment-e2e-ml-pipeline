@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the linter
+        run: python -m pip install "ruff==0.17.3"
+      - name: Run ruff
+        run: ruff check --output-format=concise .
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install the test dependencies
+        run: python -m pip install "pytest>=8.0"
+      - name: Run the test suite
+        run: python -m pytest tests/ -v
+
+  repository-checks:
+    name: Repository checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Parse the DAG files
+        # Airflow is not installed here, so the DAG files are checked with
+        # the parser rather than by importing them.  The "DAG import" job
+        # below imports them with Airflow installed.
+        run: |
+          python -m py_compile dags/evaluate_agent.py dags/mini-swe-bench-single.py
+      - name: Parse the shell scripts
+        run: |
+          for script in scripts/*.sh run-airflow-standalone.sh; do
+            bash -n "${script}"
+          done
+      - name: Check the committed run artefacts
+        run: python tools/check_run_artifacts.py
+
+  dag-import:
+    name: DAG import
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install Airflow
+        run: python -m pip install "apache-airflow>=2.9,<3"
+      - name: Import the DAG files
+        env:
+          AIRFLOW_HOME: ${{ runner.temp }}/airflow
+          PROJECT_ROOT: ${{ github.workspace }}
+        run: |
+          mkdir -p "${AIRFLOW_HOME}"
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          for dag_file in sorted(Path("dags").glob("*.py")):
+              spec = importlib.util.spec_from_file_location(dag_file.stem, dag_file)
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              print(f"imported {dag_file}")
+          PY

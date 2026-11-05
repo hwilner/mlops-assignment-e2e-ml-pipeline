@@ -286,3 +286,33 @@ We care more about engineering judgment and traceability than about one lucky me
 | **Docker Compose deployment** | 10% | Airflow and MLflow can run from `docker-compose.yaml` with documented setup and required environment variables. The Compose deployment should support the pipeline rather than become the main point of the assignment. |
 | **Report and reproducibility** | 10% | `REPORT.md` explains the architecture, how to trigger a run, where artifacts live, how to rerun by `run-id`, and what happened in at least one completed evaluation. |
 
+
+---
+
+## Repository Layout and Checks
+
+```
+dags/        Airflow DAGs: the evaluate_agent pipeline and the starter DAG
+pipeline/    The logic the DAG imports: configuration, commands, metrics
+scripts/     Command-line wrappers for the agent and the evaluation harness
+tools/       Repository checks that run without a scheduler
+tests/       Unit tests for the pipeline package and the tools
+runs/        One directory per run: configuration, predictions, reports, metrics
+```
+
+The DAG is deliberately thin: everything that can be decided without a
+scheduler lives in `pipeline/`, where it is unit-tested.  The checks below
+are the same ones that continuous integration runs on every push to `main`.
+
+```bash
+uv sync
+python -m pytest tests/ -q          # the unit tests
+ruff check .                        # the linter
+python tools/check_run_artifacts.py # the committed runs agree with themselves
+```
+
+`tools/check_run_artifacts.py` verifies that every committed run directory
+is self-consistent: that its `metrics.json` and `manifest.json` agree, that
+the counts add up, that a resolve rate is only reported when there is
+something to divide by, and that the paths in the manifest resolve inside
+the run directory so the directory can be handed to someone else as it is.

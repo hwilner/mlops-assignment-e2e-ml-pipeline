@@ -26,9 +26,12 @@ COPY uv.lock .
 # runtime volume mount (see docker-compose.yaml for the targeted mount strategy).
 RUN uv sync --locked
 
-# Copy scripts and dags so they are available inside the image.
+# Copy scripts, dags and the pipeline package so they are available inside
+# the image.  The pipeline package holds the logic the DAG imports, so it
+# has to be part of the image and not only of the source tree.
 COPY scripts scripts/
 COPY dags dags/
+COPY pipeline pipeline/
 
 RUN chmod +x scripts/*.sh
 
