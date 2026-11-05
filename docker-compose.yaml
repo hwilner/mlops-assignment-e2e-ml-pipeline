@@ -58,6 +58,9 @@ x-airflow-common: &airflow-common
     - ./dags:/opt/airflow/dags:ro
     # Scripts: mounted read-only so the DAG can call them.
     - ./scripts:/mlops-assignment/scripts:ro
+    # Pipeline package: mounted read-only so the logic the DAG imports can be
+    # edited without rebuilding the image.
+    - ./pipeline:/mlops-assignment/pipeline:ro
     # Runs: mounted read-write so artefacts are visible on the host.
     - ./runs:/opt/airflow/runs
     # Fix 4: expose the host Docker daemon socket so the SWE-bench evaluation

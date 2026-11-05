@@ -10,6 +10,14 @@ Each run is fully reproducible from its ``runs/<run-id>/`` directory, which
 contains the configuration, agent trajectories, evaluation logs, metrics, and
 a manifest pointing to all artefacts.
 
+The DAG itself is deliberately thin.  Everything that can be decided without
+a scheduler lives in the ``pipeline`` package next to this file, where it is
+unit-tested: the run configuration and its validation
+(:mod:`pipeline.config`), the two command lines
+(:mod:`pipeline.evaluation`), and the metrics
+(:mod:`pipeline.metrics`).  This module only wires the tasks together and
+talks to Airflow and MLflow.
+
 Airflow parameters (set via the "Trigger DAG w/ config" UI or the CLI):
 
     Required:
@@ -42,20 +50,21 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import uuid
-from datetime import datetime
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from airflow.decorators import dag, task
+from airflow.exceptions import AirflowException
 from airflow.models.param import Param
 
 # ---------------------------------------------------------------------------
 # Project layout
 # ---------------------------------------------------------------------------
-# Fix 2: make paths env-configurable so the DAG works both locally (where
-# __file__ resolves to the repo root) and inside Docker (where the DAG file
-# is mounted at /opt/airflow/dags/ but the project lives at /mlops-assignment).
+# The DAG file is mounted at /opt/airflow/dags/ in Docker, but the project
+# lives at /mlops-assignment, so the project root is taken from the
+# environment and only falls back to the location of this file.
 #
 # docker-compose.yaml sets:
 #   PROJECT_ROOT=/mlops-assignment
@@ -66,94 +75,37 @@ from airflow.models.param import Param
 PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", str(Path(__file__).resolve().parents[1])))
 RUNS_ROOT = Path(os.environ.get("RUNS_ROOT", str(PROJECT_ROOT / "runs")))
 
-# ---------------------------------------------------------------------------
-# Default parameter values
-# ---------------------------------------------------------------------------
-DEFAULT_MODEL = "nebius/moonshotai/Kimi-K2.6"
-DEFAULT_TASK_SLICE = "0:3"
-DEFAULT_WORKERS = 3
-DEFAULT_COST_LIMIT = 0
+# The pipeline package is imported rather than duplicated here.  Airflow
+# imports this file with its own working directory, so the project root has
+# to be on the import path explicitly; the import therefore comes after the
+# path setup above.
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
+from pipeline.config import (  # noqa: E402  (import follows the path setup)
+    DEFAULT_COST_LIMIT,
+    DEFAULT_MODEL,
+    DEFAULT_TASK_SLICE,
+    DEFAULT_WORKERS,
+    build_run_config,
+    prepare_run_dir,
+)
+from pipeline.evaluation import (  # noqa: E402  (import follows the path setup)
+    build_agent_command,
+    build_eval_command,
+)
+from pipeline.metrics import (  # noqa: E402  (import follows the path setup)
+    METRICS_STATUS_OK,
+    collect_metrics,
+    write_manifest,
+)
+from pipeline.predictions import (  # noqa: E402  (import follows the path setup)
+    read_predictions,
+)
 
 # ===========================================================================
 # Helper functions
 # ===========================================================================
-
-def build_run_config(params: dict[str, Any]) -> dict[str, Any]:
-    """Build a normalised run configuration dictionary from raw Airflow params.
-
-    Applies defaults for optional parameters and generates a ``run_id`` if one
-    was not supplied.  The returned dict is the single source of truth for the
-    entire DAG run and is written to ``config.json`` by ``prepare_run_dir``.
-
-    Args:
-        params: Raw Airflow ``dag_run.conf`` dictionary.  Must contain at
-            minimum ``split``, ``subset``, and ``workers``.
-
-    Returns:
-        A fully populated run-configuration dictionary with keys:
-            run_id, split, subset, workers, model, task_slice, cost_limit,
-            created_at.
-
-    Raises:
-        ValueError: If any of the required keys (split, subset, workers) are
-            missing from *params*.
-    """
-    for required_key in ("split", "subset", "workers"):
-        if required_key not in params:
-            raise ValueError(
-                f"Required Airflow param '{required_key}' is missing. "
-                "Trigger the DAG with at least: "
-                '{"split": "test", "subset": "verified", "workers": 3}'
-            )
-
-    # Generate a deterministic run_id if not supplied.
-    run_id = params.get("run_id") or (
-        f"run-{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}-"
-        f"{str(uuid.uuid4())[:8]}"
-    )
-
-    return {
-        "run_id":      run_id,
-        "split":       str(params["split"]),
-        "subset":      str(params["subset"]),
-        "workers":     int(params["workers"]),
-        "model":       str(params.get("model", DEFAULT_MODEL)),
-        "task_slice":  str(params.get("task_slice", DEFAULT_TASK_SLICE)),
-        "cost_limit":  float(params.get("cost_limit", DEFAULT_COST_LIMIT)),
-        "created_at":  datetime.utcnow().isoformat() + "Z",
-    }
-
-
-def prepare_run_dir(run_config: dict[str, Any]) -> Path:
-    """Create the run directory tree and write ``config.json``.
-
-    Creates the following layout under ``runs/<run-id>/``::
-
-        runs/<run-id>/
-            config.json          ← full run configuration
-            run-agent/           ← populated by run_agent_batch()
-            run-eval/            ← populated by run_swebench_eval()
-
-    Args:
-        run_config: Normalised run configuration as returned by
-            ``build_run_config()``.
-
-    Returns:
-        The ``Path`` object pointing to ``runs/<run-id>/``.
-    """
-    run_dir = RUNS_ROOT / run_config["run_id"]
-
-    # Create sub-directories.
-    (run_dir / "run-agent").mkdir(parents=True, exist_ok=True)
-    (run_dir / "run-eval").mkdir(parents=True, exist_ok=True)
-
-    # Write the canonical config file.
-    config_path = run_dir / "config.json"
-    config_path.write_text(json.dumps(run_config, indent=2))
-
-    return run_dir
-
 
 def run_agent_batch(run_config: dict[str, Any], run_dir: Path) -> Path:
     """Execute mini-swe-agent on the configured SWE-bench subset.
@@ -175,20 +127,7 @@ def run_agent_batch(run_config: dict[str, Any], run_dir: Path) -> Path:
             non-zero return code.
     """
     agent_out_dir = run_dir / "run-agent"
-
-    cmd = [
-        "uv", "run", "mini-extra", "swebench",
-        "--subset",  run_config["subset"],
-        "--split",   run_config["split"],
-        "--model",   run_config["model"],
-        "--slice",   run_config["task_slice"],
-        "--workers", str(run_config["workers"]),
-        "-o", str(agent_out_dir),
-    ]
-
-    # Append cost-limit only when a positive value is set.
-    if run_config["cost_limit"] > 0:
-        cmd += ["--cost-limit", str(run_config["cost_limit"])]
+    cmd = build_agent_command(run_config, agent_out_dir)
 
     env = {
         **os.environ,
@@ -224,103 +163,10 @@ def run_swebench_eval(
             non-zero return code.
     """
     eval_out_dir = run_dir / "run-eval"
-
-    # Fix 5: derive the dataset name from the 'subset' param so that triggering
-    # with subset='lite' evaluates against SWE-bench_Lite, not SWE-bench_Verified.
-    # If an unrecognised subset is passed, fall back to using it verbatim so
-    # callers can supply a fully-qualified dataset name directly.
-    dataset_by_subset: dict[str, str] = {
-        "verified": "princeton-nlp/SWE-bench_Verified",
-        "lite":     "princeton-nlp/SWE-bench_Lite",
-        "full":     "princeton-nlp/SWE-bench",
-    }
-    dataset_name = dataset_by_subset.get(
-        run_config["subset"].lower(),
-        run_config["subset"],  # fallback: treat subset as a raw dataset name
-    )
-
-    cmd = [
-        "uv", "run", "python", "-m", "swebench.harness.run_evaluation",
-        "--dataset_name",     dataset_name,
-        "--predictions_path", str(preds_path),
-        "--max_workers",      str(run_config["workers"]),
-        "--run_id",           run_config["run_id"],
-        "--report_dir",       str(eval_out_dir),
-    ]
+    cmd = build_eval_command(run_config, preds_path, eval_out_dir)
 
     subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)
     return eval_out_dir
-
-
-def collect_metrics(eval_dir: Path) -> dict[str, Any]:
-    """Parse evaluation output and aggregate per-run metrics.
-
-    Walks the ``eval_dir`` tree looking for per-instance ``report.json``
-    files (written by the SWE-bench harness) and aggregates them into a
-    single metrics dictionary.  Also reads the top-level summary JSON if
-    present.
-
-    Args:
-        eval_dir: Path to the ``run-eval/`` directory produced by
-            ``run_swebench_eval()``.
-
-    Returns:
-        A dictionary with at minimum the following keys:
-            total_instances   (int)  — number of evaluated instances.
-            resolved          (int)  — number of resolved instances.
-            resolve_rate      (float)— resolved / total_instances.
-            unresolved        (int)  — number of unresolved instances.
-            patch_applied     (int)  — instances where the patch applied.
-    """
-    # Collect all per-instance report.json files.
-    report_files = list(eval_dir.rglob("report.json"))
-
-    total = len(report_files)
-    resolved = 0
-    patch_applied = 0
-
-    for rf in report_files:
-        try:
-            data = json.loads(rf.read_text())
-            # Each report.json has one key (the instance id) mapping to a dict.
-            for instance_data in data.values():
-                if instance_data.get("resolved"):
-                    resolved += 1
-                if instance_data.get("patch_successfully_applied"):
-                    patch_applied += 1
-        except (json.JSONDecodeError, AttributeError):
-            # Malformed report — count the instance but mark as unresolved.
-            pass
-
-    # Also try the top-level summary JSON produced by the harness.
-    summary_candidates = list(eval_dir.rglob("*.json"))
-    for sc in summary_candidates:
-        if sc.name == "report.json":
-            continue
-        try:
-            summary = json.loads(sc.read_text())
-            if "total_instances" in summary:
-                # Use the harness-provided totals when available.
-                return {
-                    "total_instances": summary.get("total_instances", total),
-                    "resolved":        summary.get("resolved_instances", resolved),
-                    "unresolved":      summary.get("unresolved_instances", total - resolved),
-                    "patch_applied":   patch_applied,
-                    "resolve_rate":    (
-                        summary.get("resolved_instances", resolved)
-                        / max(summary.get("total_instances", total), 1)
-                    ),
-                }
-        except (json.JSONDecodeError, AttributeError):
-            pass
-
-    return {
-        "total_instances": total,
-        "resolved":        resolved,
-        "unresolved":      total - resolved,
-        "patch_applied":   patch_applied,
-        "resolve_rate":    resolved / max(total, 1),
-    }
 
 
 def log_mlflow_run(
@@ -364,62 +210,22 @@ def log_mlflow_run(
         for key, value in run_config.items():
             mlflow.log_param(key, value)
 
-        # Log all numeric metrics.
+        # Log all numeric metrics.  A metric that could not be computed is
+        # skipped rather than logged as zero.
         for key, value in metrics.items():
-            if isinstance(value, (int, float)):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
                 mlflow.log_metric(key, float(value))
 
         # Tag the run with the artifact location for easy retrieval.
         mlflow.set_tag("artifact_uri", artifact_uri)
         mlflow.set_tag("run_id", run_config["run_id"])
+        # The status says whether the metrics describe a measured result.
+        mlflow.set_tag("metrics_status", str(metrics.get("status", "UNKNOWN")))
 
     print(
         f"[summarize_and_log] MLflow run logged to {tracking_uri} "
         f"under experiment '{experiment_name}'"
     )
-
-
-def write_manifest(
-    run_dir: Path,
-    run_config: dict[str, Any],
-    metrics: dict[str, Any],
-) -> Path:
-    """Write ``manifest.json`` summarising the run artefacts.
-
-    The manifest is the single document that lets a teammate reconstruct the
-    full picture of a run: what was run, with which config, what was produced,
-    and where to find each artefact.
-
-    Args:
-        run_dir:    Path to the run directory (``runs/<run-id>/``).
-        run_config: Normalised run configuration dictionary.
-        metrics:    Aggregated metrics dictionary.
-
-    Returns:
-        Path to the written ``manifest.json`` file.
-    """
-    preds_path = run_dir / "run-agent" / "preds.json"
-    manifest = {
-        "run_id":       run_config["run_id"],
-        "created_at":   run_config["created_at"],
-        "config":       str(run_dir / "config.json"),
-        "artefacts": {
-            "predictions":       str(preds_path) if preds_path.exists() else None,
-            "trajectories_dir":  str(run_dir / "run-agent"),
-            "eval_logs_dir":     str(run_dir / "run-eval"),
-            "metrics":           str(run_dir / "metrics.json"),
-        },
-        "metrics_summary": metrics,
-        "remote_storage": (
-            "Not yet uploaded.  "
-            "To upload: aws s3 cp --recursive "
-            f"runs/{run_config['run_id']}/ "
-            f"s3://<YOUR_BUCKET>/runs/{run_config['run_id']}/"
-        ),
-    }
-    manifest_path = run_dir / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2))
-    return manifest_path
 
 
 # ===========================================================================
@@ -432,7 +238,7 @@ def write_manifest(
         "End-to-end SWE-bench evaluation: run mini-swe-agent on a configurable "
         "subset, evaluate with SWE-bench harness, and log results to MLflow."
     ),
-    start_date=datetime(2024, 1, 1),
+    start_date=datetime(2024, 1, 1, tzinfo=UTC),
     schedule=None,       # manual / API-triggered only
     catchup=False,
     tags=["swebench", "mlops", "evaluation"],
@@ -510,10 +316,13 @@ def evaluate_agent_dag():
         Returns:
             The normalised run-configuration dictionary (JSON-serialisable),
             which is passed to downstream tasks via XCom.
+
+        Raises:
+            ValueError: If a parameter is missing or fails validation.
         """
         raw_params = context["dag_run"].conf or {}
         run_config = build_run_config(raw_params)
-        run_dir = prepare_run_dir(run_config)
+        run_dir = prepare_run_dir(run_config, RUNS_ROOT)
         print(
             f"[prepare_run] Run directory created: {run_dir}\n"
             f"[prepare_run] Config: {json.dumps(run_config, indent=2)}"
@@ -562,8 +371,8 @@ def evaluate_agent_dag():
     def run_eval(agent_xcom: dict) -> dict:
         """Run the SWE-bench evaluation harness on the agent predictions.
 
-        Locates ``preds.json`` in the agent output directory and calls
-        ``run_swebench_eval()``.
+        Locates ``preds.json`` in the agent output directory, checks that it
+        holds at least one prediction, and calls ``run_swebench_eval()``.
 
         Args:
             agent_xcom: Dictionary pushed by ``run_agent`` containing
@@ -576,21 +385,19 @@ def evaluate_agent_dag():
         Raises:
             FileNotFoundError: If ``preds.json`` does not exist in the agent
                 output directory.
+            ValueError: If ``preds.json`` is malformed or holds no
+                prediction.
         """
         run_dir = Path(agent_xcom.pop("_run_dir"))
         agent_out_dir = Path(agent_xcom.pop("_agent_out_dir"))
         run_config = agent_xcom
 
         preds_path = agent_out_dir / "preds.json"
-        if not preds_path.exists():
-            raise FileNotFoundError(
-                f"[run_eval] preds.json not found at {preds_path}. "
-                "The run_agent task may have failed silently."
-            )
+        predictions = read_predictions(preds_path)
 
         print(
             f"[run_eval] Starting SWE-bench evaluation\n"
-            f"  predictions : {preds_path}\n"
+            f"  predictions : {preds_path} ({len(predictions)} instances)\n"
             f"  output      : {run_dir / 'run-eval'}"
         )
 
@@ -614,6 +421,12 @@ def evaluate_agent_dag():
         Args:
             eval_xcom: Dictionary pushed by ``run_eval`` containing
                 ``_run_dir`` and ``_eval_out_dir``.
+
+        Raises:
+            AirflowException: If the evaluation produced no instance report.
+                The run is written out first so the failure can be
+                investigated, but the task is marked failed because nothing
+                was measured.
         """
         run_dir = Path(eval_xcom.pop("_run_dir"))
         eval_out_dir = Path(eval_xcom.pop("_eval_out_dir"))
@@ -636,6 +449,16 @@ def evaluate_agent_dag():
 
         # Log to MLflow.
         log_mlflow_run(run_config, metrics, artifact_uri=str(run_dir))
+
+        if metrics.get("status") != METRICS_STATUS_OK:
+            # The metrics were written and logged so the failure can be
+            # investigated, but the task must fail: a run that measured
+            # nothing is not a successful run.
+            raise AirflowException(
+                f"The evaluation measured no result (status "
+                f"{metrics.get('status')!r}). The run directory is "
+                f"{run_dir}. Notes: {'; '.join(metrics.get('notes', [])) or 'none'}."
+            )
 
         print(
             f"[summarize_and_log] Run complete.\n"
