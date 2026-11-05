@@ -20,6 +20,8 @@ from pipeline.metrics import (
 )
 from pipeline.predictions import read_predictions
 
+AGENT_CONFIG = Path("config") / "benchmarks" / "swebench.yaml"
+
 
 def write_harness_output(eval_dir: Path, instances: dict[str, bool]) -> None:
     """Write the output the SWE-bench harness produces for a run.

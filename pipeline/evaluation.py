@@ -20,6 +20,7 @@ Example:
 
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,13 @@ DATASET_BY_SUBSET: dict[str, str] = {
     "lite": "princeton-nlp/SWE-bench_Lite",
     "full": "princeton-nlp/SWE-bench",
 }
+
+# The SWE-bench configuration file that ships with mini-swe-agent.  It is
+# named explicitly on the command line whenever a configuration override is
+# added, because mini-swe-agent replaces its default configuration list when
+# ``--config`` is given.
+AGENT_CONFIG_FILE = Path("config") / "benchmarks" / "swebench.yaml"
+
 
 def resolve_dataset_name(subset: str) -> str:
     """Return the SWE-bench dataset name that corresponds to *subset*.
@@ -51,6 +59,47 @@ def resolve_dataset_name(subset: str) -> str:
         'my-org/my-dataset'
     """
     return DATASET_BY_SUBSET.get(subset.lower(), subset)
+
+
+def agent_config_path(package_root: Path | None = None) -> Path:
+    """Return the path of the SWE-bench configuration shipped with mini-swe-agent.
+
+    The configuration is located rather than named, so that the pipeline
+    always uses the same file that mini-swe-agent itself would use by
+    default.  The package is located with
+    :func:`importlib.util.find_spec`, which does not import it and therefore
+    does not pay for mini-swe-agent's optional dependencies at DAG parse
+    time.
+
+    Args:
+        package_root: Root of the installed ``minisweagent`` package.  Only
+            supplied by the tests; the installed package is used otherwise.
+
+    Returns:
+        The path of the ``swebench.yaml`` benchmark configuration.
+
+    Raises:
+        FileNotFoundError: If mini-swe-agent is not installed, or if the
+            installed version does not ship the benchmark configuration.
+    """
+    if package_root is None:
+        spec = importlib.util.find_spec("minisweagent")
+        if spec is None or not spec.submodule_search_locations:
+            raise FileNotFoundError(
+                "mini-swe-agent is not installed, so its SWE-bench "
+                "configuration cannot be located. Install the project "
+                "dependencies with 'uv sync'."
+            )
+        package_root = Path(next(iter(spec.submodule_search_locations)))
+    config_path = package_root / AGENT_CONFIG_FILE
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"mini-swe-agent does not ship the expected SWE-bench "
+            f"configuration at {config_path}. A cost limit can only be "
+            "applied if that file is present, because passing any "
+            "configuration to mini-swe-agent replaces its default one."
+        )
+    return config_path
 
 
 def build_agent_command(
@@ -103,9 +152,14 @@ def build_agent_command(
         str(run_config["workers"]),
         "-o",
         str(output_dir),
+        # Name the benchmark configuration explicitly: mini-swe-agent drops
+        # its default configuration as soon as any --config value is given.
+        "-c",
+        str(agent_config_path(package_root)),
+        # The cost limit is the last override so it wins the merge.
+        "-c",
+        f"agent.cost_limit={run_config['cost_limit']}",
     ]
-    if float(run_config["cost_limit"]) > 0:
-        command += ["--cost-limit", str(run_config["cost_limit"])]
     return command
 
 

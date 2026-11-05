@@ -112,7 +112,7 @@ def validate_run_id(run_id: Any) -> str:
     return run_id
 
 
-def _unused_validate_workers(value: Any) -> int:
+def _validate_workers(value: Any) -> int:
     """Validate the ``workers`` parameter.
 
     Args:
@@ -155,7 +155,7 @@ def _unused_validate_workers(value: Any) -> int:
     return value
 
 
-def _unused_validate_cost_limit(value: Any) -> float:
+def _validate_cost_limit(value: Any) -> float:
     """Validate the ``cost_limit`` parameter.
 
     Args:
@@ -183,7 +183,7 @@ def _unused_validate_cost_limit(value: Any) -> float:
     return cost_limit
 
 
-def _unused_validate_text_param(name: str, value: Any) -> str:
+def _validate_text_param(name: str, value: Any) -> str:
     """Validate a required, non-empty text parameter.
 
     Args:
@@ -241,7 +241,7 @@ def build_run_config(params: Mapping[str, Any]) -> dict[str, Any]:
 
     supplied_run_id = params.get("run_id")
     if supplied_run_id:
-        run_id = str(supplied_run_id)
+        run_id = validate_run_id(supplied_run_id)
     else:
         run_id = f"run-{_now_utc().strftime('%Y%m%dT%H%M%S')}-{str(uuid.uuid4())[:8]}"
 
@@ -250,12 +250,12 @@ def build_run_config(params: Mapping[str, Any]) -> dict[str, Any]:
 
     return {
         "run_id": run_id,
-        "split": str(params["split"]),
-        "subset": str(params["subset"]),
-        "workers": int(params["workers"]),
-        "model": str(model),
-        "task_slice": str(task_slice),
-        "cost_limit": float(params.get("cost_limit", DEFAULT_COST_LIMIT)),
+        "split": _validate_text_param("split", params["split"]),
+        "subset": _validate_text_param("subset", params["subset"]),
+        "workers": _validate_workers(params["workers"]),
+        "model": _validate_text_param("model", model),
+        "task_slice": _validate_text_param("task_slice", task_slice),
+        "cost_limit": _validate_cost_limit(params.get("cost_limit", DEFAULT_COST_LIMIT)),
         "created_at": _format_timestamp(_now_utc()),
     }
 
