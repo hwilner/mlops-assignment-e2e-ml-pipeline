@@ -194,6 +194,13 @@ The two DAG files were additionally imported with Airflow 2 installed and
 the `evaluate_agent` DAG was found with its four tasks (`prepare_run`,
 `run_agent`, `run_eval`, `summarize_and_log`) and its seven parameters.
 
+Continuous integration ran the same commands on the merge commit
+`59d859c` — run `41985167219`, five jobs green: the linter, the test suite
+on Python 3.12 and on Python 3.13, the repository checks, and the import of
+both DAG files with Airflow installed.  The five commands above were run
+once more in a fresh clone of `origin` at `59d859c`, with the same outcome
+(77 passed, no lint finding, 0 errors and 2 warnings).
+
 The artefact checker is exercised against deliberately broken run
 directories, one per rule it enforces, so each rule is shown to fail on a
 violation rather than merely to pass.  Continuous integration
