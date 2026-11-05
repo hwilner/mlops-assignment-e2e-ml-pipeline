@@ -12,13 +12,14 @@ import json
 from pathlib import Path
 
 from pipeline.config import build_run_config, prepare_run_dir
-from pipeline.evaluation import build_eval_command
+from pipeline.evaluation import build_agent_command, build_eval_command
 from pipeline.metrics import (
     METRICS_STATUS_OK,
     collect_metrics,
     write_manifest,
 )
 from pipeline.predictions import read_predictions
+from tools import check_run_artifacts as checker
 
 AGENT_CONFIG = Path("config") / "benchmarks" / "swebench.yaml"
 
@@ -107,8 +108,31 @@ def test_a_run_produces_a_self_consistent_directory(tmp_path: Path) -> None:
     assert metrics["resolve_rate"] == 1 / 3
     assert metrics["dataset_instances"] == 500
 
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["metrics_summary"] == metrics
-    assert manifest["artefacts"]["predictions"] == "run-agent/preds.json"
-    assert manifest["artefacts"]["eval_logs_dir"] == "run-eval"
+    findings = checker.check_run(run_dir)
+    assert [finding.message for finding in findings] == []
 
+
+def test_the_agent_command_carries_the_run_parameters(tmp_path: Path) -> None:
+    """The agent command is built from the run configuration."""
+    run_config = build_run_config(
+        {
+            "split": "dev",
+            "subset": "lite",
+            "workers": 2,
+            "cost_limit": 0.5,
+            "run_id": "run-1",
+        }
+    )
+    package_root = tmp_path / "minisweagent"
+    config = package_root / AGENT_CONFIG
+    config.parent.mkdir(parents=True)
+    config.write_text("agent:\n  cost_limit: 3.0\n")
+
+    command = build_agent_command(
+        run_config, output_dir=tmp_path / "out", package_root=package_root
+    )
+
+    assert command[command.index("--split") + 1] == "dev"
+    assert command[command.index("--subset") + 1] == "lite"
+    assert command[command.index("--workers") + 1] == "2"
+    assert "agent.cost_limit=0.5" in command
